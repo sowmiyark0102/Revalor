@@ -1,0 +1,306 @@
+// Revalor — Prisma schema
+// Run `npx prisma migrate dev` after setting DATABASE_URL to create these tables.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------- Enums ----------
+
+enum Role {
+  USER
+  RECYCLER
+  ORG_ADMIN
+  PLATFORM_ADMIN
+}
+
+enum Condition {
+  WORKING
+  PARTIALLY_WORKING
+  NON_FUNCTIONAL
+  UNKNOWN
+}
+
+enum RecommendedAction {
+  REPAIR
+  REUSE
+  RESELL
+  RECYCLE
+  SAFE_DISPOSAL
+}
+
+enum CollectionStatus {
+  REQUESTED
+  CONFIRMED
+  COLLECTOR_ASSIGNED
+  PICKED_UP
+  PROCESSING
+  RECOVERED
+  CANCELLED
+}
+
+enum PartnerStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+enum NotificationType {
+  SCAN_COMPLETE
+  PICKUP_UPDATE
+  REWARD_EARNED
+  CAMPAIGN_UPDATE
+  SYSTEM
+}
+
+// ---------- Core models ----------
+
+model User {
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  passwordHash  String?
+  googleId      String?  @unique
+  role          Role     @default(USER)
+  organizationId String?
+  organization  Organization? @relation(fields: [organizationId], references: [id])
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  scans             WasteScan[]
+  collectionRequests CollectionRequest[]
+  rewards           UserReward[]
+  impactRecords     ImpactRecord[]
+  notifications     Notification[]
+  campaignEntries   CampaignParticipant[]
+  pointsBalance     Int      @default(0)
+  level             Int      @default(1)
+
+  @@index([email])
+  @@index([organizationId])
+}
+
+model Organization {
+  id          String   @id @default(cuid())
+  name        String
+  type        String   // college | company | apartment | other
+  address     String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members     User[]
+  campaigns   Campaign[]
+
+  @@index([type])
+}
+
+model WasteCategory {
+  id            String   @id @default(cuid())
+  name          String   @unique   // e.g. "Smartphones", "Laptops", "Cables"
+  parentGroup   String   // e.g. "E-Waste"
+  description   String?
+  createdAt     DateTime @default(now())
+
+  scans         WasteScan[]
+  items         WasteItem[]
+}
+
+model WasteItem {
+  id            String   @id @default(cuid())
+  name          String
+  categoryId    String
+  category      WasteCategory @relation(fields: [categoryId], references: [id])
+  condition     Condition @default(UNKNOWN)
+  recommendedAction RecommendedAction?
+  estValueMin   Int?     // in smallest currency unit (paise), null if not applicable
+  estValueMax   Int?
+  createdAt     DateTime @default(now())
+
+  scans         WasteScan[]
+  collectionRequests CollectionRequest[]
+  recoveryEvents RecoveryEvent[]
+
+  @@index([categoryId])
+}
+
+model WasteScan {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  imageUrl      String
+  categoryId    String?
+  category      WasteCategory? @relation(fields: [categoryId], references: [id])
+  wasteItemId   String?
+  wasteItem     WasteItem? @relation(fields: [wasteItemId], references: [id])
+  detectedLabel String
+  confidence    Float     // 0-1
+  condition     Condition @default(UNKNOWN)
+  recommendedAction RecommendedAction?
+  estValueMin   Int?
+  estValueMax   Int?
+  materials     String[]  // e.g. ["Aluminum", "Copper", "Plastic"]
+  aiProvider    String    // "demo" | "anthropic" | "openai"
+  createdAt     DateTime  @default(now())
+
+  @@index([userId])
+  @@index([categoryId])
+}
+
+model RecyclerPartner {
+  id            String   @id @default(cuid())
+  name          String
+  status        PartnerStatus @default(PENDING)
+  latitude      Float
+  longitude     Float
+  address       String
+  acceptedTypes String[]   // category names accepted
+  pickupAvailable  Boolean @default(false)
+  dropoffAvailable Boolean @default(true)
+  operatingHours   String
+  rating        Float?   // 0-5, null until reviews exist
+  contactPhone  String?
+  contactEmail  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  collectionRequests CollectionRequest[]
+
+  @@index([status])
+}
+
+model CollectionRequest {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  wasteItemId   String?
+  wasteItem     WasteItem? @relation(fields: [wasteItemId], references: [id])
+  partnerId     String?
+  partner       RecyclerPartner? @relation(fields: [partnerId], references: [id])
+  quantity      Int      @default(1)
+  pickupAddress String
+  preferredDate DateTime
+  preferredTime String
+  contactPhone  String
+  notes         String?
+  status        CollectionStatus @default(REQUESTED)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  recoveryEvents RecoveryEvent[]
+
+  @@index([userId])
+  @@index([partnerId])
+  @@index([status])
+}
+
+model RecoveryEvent {
+  id              String   @id @default(cuid())
+  collectionRequestId String
+  collectionRequest   CollectionRequest @relation(fields: [collectionRequestId], references: [id])
+  wasteItemId     String?
+  wasteItem       WasteItem? @relation(fields: [wasteItemId], references: [id])
+  stage           String   // Collection | Sorting | Processing | Material Recovery | Final Outcome
+  note            String?
+  recoveredMaterials String[]
+  verifiedByPartner Boolean @default(false)
+  createdAt       DateTime @default(now())
+
+  @@index([collectionRequestId])
+}
+
+model Reward {
+  id            String   @id @default(cuid())
+  code          String   @unique   // e.g. "FIRST_RECOVERY"
+  title         String
+  description   String
+  pointsValue   Int
+  isBadge       Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  userRewards   UserReward[]
+}
+
+model UserReward {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  rewardId      String
+  reward        Reward   @relation(fields: [rewardId], references: [id])
+  earnedAt      DateTime @default(now())
+
+  @@index([userId])
+  @@unique([userId, rewardId])
+}
+
+model ImpactRecord {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  wasteDivertedKg Float
+  co2AvoidedKg    Float
+  materialsRecoveredKg Float
+  isEstimate      Boolean @default(true)
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Campaign {
+  id            String   @id @default(cuid())
+  organizationId String
+  organization  Organization @relation(fields: [organizationId], references: [id])
+  title         String
+  description   String?
+  targetKg      Float
+  collectedKg   Float    @default(0)
+  startDate     DateTime
+  endDate       DateTime
+  createdAt     DateTime @default(now())
+
+  participants  CampaignParticipant[]
+
+  @@index([organizationId])
+}
+
+model CampaignParticipant {
+  id            String   @id @default(cuid())
+  campaignId    String
+  campaign      Campaign @relation(fields: [campaignId], references: [id])
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  contributedKg Float    @default(0)
+  joinedAt      DateTime @default(now())
+
+  @@index([campaignId])
+  @@unique([campaignId, userId])
+}
+
+model Notification {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  type          NotificationType
+  title         String
+  body          String
+  read          Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([userId])
+}
+
+// Configurable factors so admins can tune impact / value estimates
+// without redeploying code.
+model ImpactFactor {
+  id            String   @id @default(cuid())
+  key           String   @unique // e.g. "co2_per_kg_ewaste"
+  label         String
+  value         Float
+  unit          String
+  updatedAt     DateTime @updatedAt
+}
